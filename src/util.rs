@@ -20,25 +20,6 @@ pub fn next_items<T, IT: Iterator<Item = T>>(iter: &mut IT, n: usize) -> errors:
     Ok(v)
 }
 
-/*
-macro_rules! repeat_to_array {
-    (($iter:expr),*) => {}
-}
-
-macro_rules! items {
-    ($($item:item)*) => ($($item)*);
-}
-
-macro_rules! trait_alias {
-    ($name:ident = $($base:tt)+) => {
-        items! {
-            pub trait $name: $($base)+ { }
-            impl<T: $($base)+> $name for T { }
-        }
-    };
-}
-*/
-
 pub fn to_u16_dyn<T: ByteOrder>(slice: &[u8]) -> errors::Result<u16> {
     Ok(Cursor::new(slice)
         .read_u16::<T>()

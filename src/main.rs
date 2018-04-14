@@ -4,7 +4,6 @@ extern crate librgs;
 extern crate rand;
 extern crate resolve;
 extern crate serde_json;
-extern crate tokio_core;
 
 use futures::prelude::*;
 use futures_timer::FutureExt;
@@ -12,21 +11,22 @@ use librgs::errors::Error;
 use librgs::protocols::models::*;
 use librgs::util::LoggingService;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use tokio_core::net::UdpSocket;
 
 fn main() {
     let logger = librgs::util::RealLogger;
     let pconfig = librgs::protocols::make_default_protocols();
 
-    let requests = vec![UserQuery {
-        protocol: pconfig.get("openttdm".into()).unwrap().clone(),
-        host: Host::S(
-            StringAddr {
-                host: "master.openttd.org".into(),
-                port: 3978,
-            }.into(),
-        ),
-    }];
+    let requests = vec![
+        UserQuery {
+            protocol: pconfig.get("openttdm".into()).unwrap().clone(),
+            host: Host::S(
+                StringAddr {
+                    host: "master.openttd.org".into(),
+                    port: 3978,
+                }.into(),
+            ),
+        },
+    ];
 
     let query_builder = librgs::UdpQueryBuilder::default();
 

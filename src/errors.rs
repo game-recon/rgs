@@ -1,4 +1,5 @@
 use futures;
+use nom;
 use std;
 use std::io;
 
@@ -18,6 +19,14 @@ pub enum Error {
     PipeError { reason: String },
     #[fail(display = "operation timed out: {}", reason)]
     TimeoutError { reason: String },
+}
+
+impl<'a> From<nom::Err<&'a [u8]>> for Error {
+    fn from(v: nom::Err<&'a [u8]>) -> Error {
+        Error::DataParseError {
+            reason: v.to_string(),
+        }
+    }
 }
 
 impl<T: 'static> From<futures::sync::mpsc::SendError<T>> for Error {
