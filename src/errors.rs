@@ -23,8 +23,8 @@ pub enum Error {
     TimeoutError { reason: String },
 }
 
-impl<T: 'static> From<futures::sync::mpsc::SendError<T>> for Error {
-    fn from(v: futures::sync::mpsc::SendError<T>) -> Self {
+impl From<futures::channel::mpsc::SendError> for Error {
+    fn from(v: futures::channel::mpsc::SendError) -> Self {
         Error::PipeError {
             reason: std::error::Error::description(&v).into(),
         }

@@ -28,8 +28,8 @@ extern crate tokio_timer;
 use protocols::models;
 
 use errors::Error;
+use futures::channel::mpsc::Sender;
 use futures::prelude::*;
-use futures::sync::mpsc::Sender;
 use models::Server;
 use pmodels::TProtocol;
 use protocols::models as pmodels;
@@ -103,7 +103,11 @@ impl Sink for ParseMuxer {
     type SinkItem = IncomingPacket;
     type SinkError = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn poll_ready(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(Async::Ready(()))
+    }
+
+    fn start_send(&mut self, item: Self::SinkItem) -> Result<(), Self::SinkError> {
         let (protocol, pkt) = item.into();
 
         let mut results_stream = self.results_stream.take().unwrap();
@@ -124,15 +128,15 @@ impl Sink for ParseMuxer {
         );
         self.results_stream = Some(results_stream);
 
-        Ok(AsyncSink::Ready)
+        Ok(())
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_flush(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
         Ok(Async::Ready(()))
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
-        self.poll_complete()
+    fn poll_close(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(Async::Ready(()))
     }
 }
 
@@ -140,8 +144,8 @@ impl Stream for ParseMuxer {
     type Item = FullParseResult;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.results_stream.as_mut().unwrap().poll()
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Self::Error> {
+        self.results_stream.as_mut().unwrap().poll_next(cx)
     }
 }
 
@@ -239,7 +243,7 @@ impl UdpQuery {
             ),
         });
 
-        let (query_sink, query_stream) = futures::sync::mpsc::channel::<pmodels::Query>(1);
+        let (query_sink, query_stream) = futures::channel::mpsc::channel::<pmodels::Query>(1);
         let query_stream = Box::new(query_stream.map_err(|_| Error::NetworkError {
             reason: "Query stream returned an error".into(),
         }));
@@ -276,16 +280,20 @@ impl Sink for UdpQuery {
     type SinkItem = pmodels::UserQuery;
     type SinkError = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        Ok(self.input_sink.start_send(item.into())?.map(|v| v.into()))
+    fn poll_ready(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(self.input_sink.poll_ready(cx)?)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.input_sink.poll_complete()?)
+    fn start_send(&mut self, item: Self::SinkItem) -> Result<(), Self::SinkError> {
+        Ok(self.input_sink.start_send(item.into())?)
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.input_sink.close()?)
+    fn poll_flush(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(self.input_sink.poll_flush(cx)?)
+    }
+
+    fn poll_close(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(self.input_sink.poll_close(cx)?)
     }
 }
 
@@ -293,12 +301,12 @@ impl Stream for UdpQuery {
     type Item = ServerEntry;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.query_to_dns.poll()?;
-        self.dns_to_socket.poll()?;
-        self.socket_to_parser.poll()?;
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Self::Error> {
+        self.query_to_dns.poll(cx)?;
+        self.dns_to_socket.poll(cx)?;
+        self.socket_to_parser.poll(cx)?;
 
-        if let Async::Ready(v) = self.parser_stream.poll()? {
+        if let Async::Ready(v) = self.parser_stream.poll_next(cx)? {
             match v {
                 Some(data) => match data {
                     FullParseResult::FollowUp(s) => {
@@ -312,12 +320,12 @@ impl Stream for UdpQuery {
                     }
                 },
                 None => {
-                    return Ok(Async::NotReady);
+                    return Ok(Async::Pending);
                 }
             }
         }
 
-        Ok(Async::NotReady)
+        Ok(Async::Pending)
     }
 }
 

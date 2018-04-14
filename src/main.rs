@@ -19,17 +19,15 @@ fn main() {
     let logger = librgs::util::RealLogger;
     let pconfig = librgs::protocols::make_default_protocols();
 
-    let requests = vec![
-        UserQuery {
-            protocol: pconfig.get("openttdm".into()).unwrap().clone(),
-            host: Host::S(
-                StringAddr {
-                    host: "master.openttd.org".into(),
-                    port: 3978,
-                }.into(),
-            ),
-        },
-    ];
+    let requests = vec![UserQuery {
+        protocol: pconfig.get("openttdm".into()).unwrap().clone(),
+        host: Host::S(
+            StringAddr {
+                host: "master.openttd.org".into(),
+                port: 3978,
+            }.into(),
+        ),
+    }];
 
     let query_builder = librgs::UdpQueryBuilder::default();
 

@@ -70,7 +70,11 @@ impl Sink for Resolver {
     type SinkItem = pmodels::Query;
     type SinkError = Error;
 
-    fn start_send(&mut self, query: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn poll_ready(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        Ok(Async::Ready(()))
+    }
+
+    fn start_send(&mut self, query: Self::SinkItem) -> Result<(), Self::SinkError> {
         self.pending_requests.push(Box::new(
             resolve_host(self.inner.clone(), query.host.clone())
                 .inspect({
@@ -91,14 +95,14 @@ impl Sink for Resolver {
                 })
                 .or_else(|e| Ok(None)),
         ));
-        Ok(AsyncSink::Ready)
+        Ok(())
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_flush(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
         Ok(Async::Ready(()))
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_close(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
         Ok(Async::Ready(()))
     }
 }
@@ -107,7 +111,7 @@ impl Stream for Resolver {
     type Item = ResolvedQuery;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Self::Error> {
         if let Async::Ready(Some(result)) = self.pending_requests.poll()? {
             if let Some(resolved) = result {
                 return Ok(Async::Ready(Some(resolved)));

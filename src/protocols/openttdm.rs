@@ -59,25 +59,33 @@ impl Sink for IPv4Parser {
     type SinkItem = u8;
     type SinkError = Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn poll_ready(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
+        if self.host_buf_full() && self.port_buf_full() {
+            Ok(Async::Pending)
+        } else {
+            Ok(Async::Ready(()))
+        }
+    }
+
+    fn start_send(&mut self, item: Self::SinkItem) -> Result<(), Self::SinkError> {
         if !self.host_buf_full() {
             self.host_buf.push_back(item);
-            Ok(AsyncSink::Ready)
+            Ok(())
         } else {
             if !self.port_buf_full() {
                 self.port_buf.push_back(item);
-                Ok(AsyncSink::Ready)
+                Ok(())
             } else {
-                Ok(AsyncSink::NotReady(item))
+                unreachable!()
             }
         }
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_flush(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
         Ok(Async::Ready(()))
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
+    fn poll_close(&mut self, cx: &mut task::Context) -> Poll<(), Self::SinkError> {
         Ok(Async::Ready(()))
     }
 }
@@ -86,7 +94,7 @@ impl Stream for IPv4Parser {
     type Item = SocketAddrV4;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Self::Error> {
         if !self.host_buf_full() || !self.port_buf_full() {
             Ok(Async::NotReady)
         } else {
@@ -196,7 +204,7 @@ impl Stream for DataParser {
     type Item = SocketAddr;
     type Error = Error;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(&mut self, cx: &mut task::Context) -> Poll<Option<Self::Item>, Self::Error> {
         if self.hosts_left == 0 {
             Ok(Async::Ready(None))
         } else {
