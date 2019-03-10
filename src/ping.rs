@@ -1,15 +1,14 @@
-use failure;
-use futures::{future, prelude::*};
+use core::pin::Pin;
+use futures::prelude::*;
 use rand::random;
 use std::net::IpAddr;
 use std::time::Duration;
-use tokio_ping;
 
 pub trait Pinger: Send + Sync {
     fn ping(
         &self,
         addr: IpAddr,
-    ) -> Box<Future<Item = Option<Duration>, Error = failure::Error> + Send>;
+    ) -> Pin<Box<dyn Future<Output = Fallible<Option<Duration>> + Send>>>;
 }
 
 pub struct DummyPinger;
@@ -18,8 +17,8 @@ impl Pinger for DummyPinger {
     fn ping(
         &self,
         _addr: IpAddr,
-    ) -> Box<Future<Item = Option<Duration>, Error = failure::Error> + Send> {
-        Box::new(future::ok(None))
+    ) -> Pin<Box<dyn Future<Output = Fallible<Option<Duration>> + Send>>> {
+        async { Ok(None) }.boxed()
     }
 }
 
@@ -27,11 +26,12 @@ impl Pinger for tokio_ping::Pinger {
     fn ping(
         &self,
         addr: IpAddr,
-    ) -> Box<Future<Item = Option<Duration>, Error = failure::Error> + Send> {
-        Box::new(
-            self.ping(addr, random(), 0, Duration::from_secs(4))
-                .map(|rtt| rtt.map(|v| Duration::from_millis(v as u64)))
-                .map_err(failure::Error::from),
-        )
+    ) -> Pin<Box<dyn Future<Output = Fallible<Option<Duration>> + Send>>> {
+        async {
+            let rtt = tokio_ping::Pinger::ping(&self, addr, random(), 0, Duration::from_secs(4))?;
+
+            rtt.map(|v| Duration::from_millis(v as u64))
+        }
+            .boxed()
     }
 }

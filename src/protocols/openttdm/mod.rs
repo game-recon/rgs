@@ -2,7 +2,7 @@ use crate::errors::Error;
 use crate::models::*;
 
 use failure::{format_err, Fallible};
-use futures;
+use futures::prelude::*;
 use openttd;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, Value};
@@ -62,7 +62,7 @@ impl Protocol for ProtocolImpl {
 
     fn parse_response(&self, pkt: Packet) -> ProtocolResultStream {
         if let Some(child) = self.child.clone() {
-            Box::new(futures::stream::iter_result(match parse_data(&pkt.data) {
+            Box::pin(futures::stream::iter(match parse_data(&pkt.data) {
                 Err(e) => vec![Err((Some(pkt), e))],
                 Ok((server_type, data)) => match server_type {
                     openttd::ServerListType::IPv4 => {
@@ -85,7 +85,7 @@ impl Protocol for ProtocolImpl {
                 .collect::<Vec<_>>(),
             }))
         } else {
-            Box::new(futures::stream::iter_ok(vec![]))
+            Box::pin(stream::empty())
         }
     }
 }

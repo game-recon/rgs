@@ -1,21 +1,22 @@
-use derive_more::From;
-use failure;
-use futures::prelude::*;
-use iso_country::Country as CountryBase;
-use serde::{
-    de::{self, Visitor},
-    Deserialize, Deserializer, Serialize, Serializer,
-};
-use serde_json::{self, Value};
-use std::{
-    self,
-    collections::{BTreeMap, HashMap},
-    net::SocketAddr,
-    ops::Deref,
-    str::FromStr,
-    string::ToString,
-    sync::Arc,
-    time::Duration,
+use {
+    core::{fmt::Debug, pin::Pin},
+    derive_more::From,
+    futures::prelude::*,
+    iso_country::Country as CountryBase,
+    serde::{
+        de::{self, Visitor},
+        Deserialize, Deserializer, Serialize, Serializer,
+    },
+    serde_json::{self, Value},
+    std::{
+        collections::{BTreeMap, HashMap},
+        net::SocketAddr,
+        ops::Deref,
+        str::FromStr,
+        string::ToString,
+        sync::Arc,
+        time::Duration,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -56,13 +57,13 @@ pub struct Packet {
     pub data: Vec<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StringAddr {
     pub host: String,
     pub port: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Host {
     A(SocketAddr),
     S(StringAddr),
@@ -164,10 +165,10 @@ pub enum ParseResult {
 }
 
 pub type ProtocolResultStream =
-    Box<Stream<Item = ParseResult, Error = (Option<Packet>, failure::Error)> + Send>;
+    Pin<Box<dyn Stream<Item = Result<ParseResult, (Option<Packet>, failure::Error)>> + Send>>;
 
 /// Protocol defines a common way to communicate with queried servers of a single type.
-pub trait Protocol: std::fmt::Debug + Send + Sync + 'static {
+pub trait Protocol: Debug + Send + Sync + 'static {
     /// Creates a request packet. Can accept an optional state if there is any.
     fn make_request(&self, state: Option<Value>) -> Vec<u8>;
     /// Create a stream of parsed values out of incoming response.

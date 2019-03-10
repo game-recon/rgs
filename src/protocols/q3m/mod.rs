@@ -34,8 +34,8 @@ impl Protocol for ProtocolImpl {
     }
     /// Create a stream of parsed values out of incoming response.
     fn parse_response(&self, p: Packet) -> ProtocolResultStream {
-        Box::new(
-            futures::stream::iter_result(
+        Box::pin(
+            futures::stream::iter(
                 match q3a::Packet::from_bytes(p.data.as_slice().into())
                     .map_err(|e| format_err!("{}", e))
                     .and_then(|(_, pkt)| match pkt {

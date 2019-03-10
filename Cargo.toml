@@ -29,19 +29,20 @@ enum-primitive-derive = "*"
 env_logger = "*"
 failure = "*"
 failure_derive = "*"
-futures = "0.1"
+futures-preview = { version = "0.3.0-alpha.17", features = ["compat"] }
+gen-stream = "0.2"
 iso_country = "*"
 log = "*"
+lz_stream_tools = { git = "https://github.com/Lukazoid/lz_stream_tools" }
 nom = "*"
 num-traits = "*"
 openttd = { git = "https://github.com/rust-game-parsers/openttd" }
 q3a = { git = "https://github.com/rust-game-parsers/q3a" }
+parking_lot = "*"
 rand = "*"
 resolve = "*"
-serde = { version = "*", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "*"
-tokio = "*"
-tokio-codec = "*"
-tokio-io = "*"
-tokio-dns-unofficial = "0.3.0"
+tokio = "0.1"
+tokio-dns-unofficial = "0.4.0"
 tokio-ping = { git = "https://github.com/knsd/tokio-ping" }

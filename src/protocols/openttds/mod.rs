@@ -2,10 +2,11 @@ use crate::errors::Error;
 use crate::models::*;
 
 use failure::{format_err, Fallible};
-use futures;
-use openttd;
+use futures::prelude::*;
+//use parking_lot::Mutex;
 use serde_json::Value;
 use std::net::SocketAddr;
+//use tokio::prelude::*;
 
 fn write_v2_data(srv: &mut Server, v: openttd::V2Data) {
     srv.rules
@@ -100,19 +101,142 @@ impl Protocol for ProtocolImpl {
     }
 
     fn parse_response(&self, pkt: Packet) -> ProtocolResultStream {
-        Box::new(futures::stream::iter_result(vec![parse_data(
-            pkt.addr, &pkt.data,
-        )
-        .map(ParseResult::Output)
-        .map_err(|e| (Some(pkt), e.context(Error::DataParseError).into()))]))
+        Box::pin(vec![parse_data(pkt.addr, &pkt.data)
+            .map(ParseResult::Output)
+            .map_err(|e| (Some(pkt), e.context(Error::DataParseError).into()))])
     }
 }
+
+/*
+struct SocketMultiplexerControl {
+    pub incoming: HashMap<SocketAddr, VecDeque<Vec<u8>>>,
+    pub outgoing: HashMap<SocketAddr, VecDeque<Vec<u8>>>,
+}
+
+struct SocketMultiplexerTask<S> {
+    pub socket: S,
+    pub control: Arc<Mutex<OneshotMultiplexerControl>>,
+}
+
+impl<
+        S: Sink<SinkItem = (SocketAddr, Vec<u8>), SinkError = failure::Error>
+            + Stream<Item = (SocketAddr, Vec<u8>), Error = failure::Error>,
+    > Future for OneshotMultiplexerTask<S>
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.socket.poll().map(|a| match a {
+            Async::Ready(Some((addr, data))) => {
+                if let Some(sender) = self.control.lock().mapping.remove(&addr) {
+                    sender.send(data);
+                    Ok(Async::NotReady)
+                }
+            }
+            Async::Ready(None) => Ok(Async::Ready(())),
+            Async::NotReady => Ok(Async::NotReady),
+        })
+    }
+}
+
+struct SocketMultiplexer {
+    pub task_close_handle: futures::sync::mpsc::Sender<()>,
+
+}
+
+impl<S> SocketMultiplexer<S> {
+    pub fn connect(&self, addr: SocketAddr) {}
+}
+
+/// Transforms provided byte stream into byte stream for resolved address
+async fn query<D, F, IN, OUT>(
+    host: Host,
+    resolver: D,
+    incoming_factory: F,
+    outgoing: OUT,
+) -> Fallible<Server>
+where
+    D: crate::dns::Resolver,
+    OUT: Sink<(SocketAddr, Vec<u8>), SinkError = failure::Error> + 'static,
+    IN: Stream<Item = Vec<u8>, Error = failure::Error>,
+    F: FnOnce(SocketAddr) -> IN + 'static,
+{
+    let addr = await!(resolver.resolve(host))?;
+
+    let incoming = (incoming_factory)(addr);
+
+    await!(outgoing.send((addr, ProtocolImpl.make_request(None))))?;
+
+    let msg = await!(incoming.into_future())
+        .map_err(|(e, _)| e)
+        .map(|(msg, _)| msg)?
+        .ok_or_else(|| format_err!("Connection hung up"))?;
+
+    parse_data(addr, &msg)
+}
+
+pub struct Querier {
+    pub sink: Box<dyn Sink<SinkItem = (SocketAddr, Vec<u8>), SinkError = failure::Error> + 'static>,
+}
+
+impl Querier {}
+
+pub enum HostState {
+    New,
+    Querying,
+    Sent,
+    Finished,
+}
+
+pub struct Querier {
+    byte_sink: Box<dyn Sink<SinkItem = Vec<u8>, SinkError = failure::Error>>,
+    byte_stream: Box<dyn Stream<Item = Vec<u8>, Error = failure::Error>>,
+    host_state: HashMap<Host, HostState>,
+    ready: VecDeque<Server>,
+}
+
+impl Sink for Querier {
+    type SinkItem = Host;
+    type SinkError = failure::Error;
+
+    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+        self.host_state.insert(item, HostState::New);
+        task::current().notify();
+        Ok(AsyncSink::Ready)
+    }
+
+    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
+        Ok(Async::Ready(()))
+    }
+
+    fn close(&mut self) -> Poll<(), Self::SinkError> {
+        Ok(Async::Ready(()))
+    }
+}
+
+impl Stream for Querier {
+    type Item = VecDeque<Server>;
+    type Error = failure::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if !self.ready.is_empty() {
+            let mut out = Default::default();
+            std::mem::swap(&mut out, &mut self.ready);
+            task::current().notify();
+
+            return Ok(Async::Ready(Some(out)));
+        }
+
+        Ok(Async::Ready(None))
+    }
+}
+*/
 
 #[cfg(test)]
 mod tests {
     use super::Protocol;
     use super::*;
-    use futures::prelude::*;
     use serde_json::json;
     use std::{collections::HashMap, str::FromStr};
 

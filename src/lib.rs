@@ -4,22 +4,34 @@
 //! The `rgs` crate provides tools to asynchronously retrieve game server information like
 //! IP, server metadata, player list and more.
 
-use failure::{format_err, Fail, Fallible};
-use futures::{
-    empty,
-    future::ok,
-    prelude::*,
-    stream::{futures_unordered, FuturesUnordered},
-    sync::mpsc::UnboundedSender,
+#![feature(async_await, generators)]
+
+use {
+    core::{
+        pin::Pin,
+        task::{Poll, Waker},
+        time::Duration,
+    },
+    failure::{format_err, Fail, Fallible},
+    futures::{
+        channel::mpsc::UnboundedSender,
+        future::{pending, ok},
+        prelude::*,
+        stream::FuturesUnordered,
+    },
+    log::{debug, trace},
+    std::{
+        collections::HashMap,
+        io,
+        net::{IpAddr, SocketAddr},
+        sync::{Arc, Mutex},
+        time::Instant,
+    },
+    tokio::{
+        codec::BytesCodec,
+        net::{UdpFramed, UdpSocket},
+    },
 };
-use log::{debug, trace};
-use std::collections::HashMap;
-use std::io;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use tokio::net::{UdpFramed, UdpSocket};
-use tokio_codec::BytesCodec;
 
 pub mod dns;
 #[macro_use]
@@ -53,28 +65,34 @@ pub enum FullParseResult {
 }
 
 struct ParseMuxer {
-    results_stream: Option<Box<Stream<Item = FullParseResult, Error = failure::Error> + Send>>,
+    results_stream: Option<Pin<Box<dyn Stream<Item = Fallible<FullParseResult>> + Send>>>,
 }
 
 impl ParseMuxer {
     pub fn new() -> Self {
         Self {
-            results_stream: Some(Box::new(futures::stream::iter_ok(vec![]))),
+            results_stream: Some(Box::pin([])),
         }
     }
 }
 
-impl Sink for ParseMuxer {
-    type SinkItem = Fallible<IncomingPacket>;
-    type SinkError = failure::Error;
+impl Sink<Fallible<IncomingPacket>> for ParseMuxer {
+    type Error = failure::Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
+    fn poll_ready(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(
+        self: Pin<&mut Self>,
+        item: Fallible<IncomingPacket>,
+    ) -> Result<(), Self::Error> {
         let mut results_stream = self.results_stream.take().unwrap();
         match item {
             Ok(incoming_packet) => {
                 let (protocol, pkt, ping) = incoming_packet.into();
 
-                results_stream = Box::new(
+                results_stream = Box::pin(
                     results_stream.chain(
                         Protocol::parse_response(&**protocol, pkt.clone())
                             .map(move |v| match v {
@@ -94,30 +112,28 @@ impl Sink for ParseMuxer {
                 );
             }
             Err(e) => {
-                results_stream = Box::new(results_stream.chain(futures::stream::iter_ok(vec![
-                    FullParseResult::Error((None, e)),
-                ])))
+                results_stream =
+                    Box::pin(results_stream.chain(vec![FullParseResult::Error((None, e))]))
             }
         }
         self.results_stream = Some(results_stream);
 
-        Ok(AsyncSink::Ready)
+        Ok(())
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(Async::Ready(()))
+    fn poll_flush(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
-        self.poll_complete()
+    fn poll_close(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 }
 
 impl Stream for ParseMuxer {
-    type Item = FullParseResult;
-    type Error = failure::Error;
+    type Item = Fallible<FullParseResult>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(self: Pin<&mut Self>, waker: &Waker) -> Poll<Option<Self::Item>> {
         self.results_stream.as_mut().unwrap().poll()
     }
 }
@@ -142,15 +158,15 @@ impl From<IncomingPacket> for (TProtocol, Packet, Duration) {
     }
 }
 
-pub type PingerFuture = Box<Future<Item = ServerEntry, Error = failure::Error> + Send>;
+pub type PingerFuture = Pin<Box<dyn Future<Output = Fallible<ServerEntry>> + Send>>;
 
 /// Represents a single request by user to query the servers fed into sink.
 pub struct UdpQuery {
-    query_to_dns: Box<Future<Item = (), Error = failure::Error> + Send>,
-    dns_to_socket: Box<Future<Item = (), Error = failure::Error> + Send>,
-    socket_to_parser: Box<Future<Item = (), Error = failure::Error> + Send>,
+    query_to_dns: Pin<Box<dyn Future<Output = Fallible<()>> + Send>>,
+    dns_to_socket: Pin<Box<dyn Future<Output = Fallible<()>> + Send>>,
+    socket_to_parser: Pin<Box<dyn Future<Output = Fallible<()>> + Send>>,
 
-    parser_stream: Box<Stream<Item = FullParseResult, Error = failure::Error> + Send>,
+    parser_stream: Pin<Box<Stream<Item = Fallible<FullParseResult>> + Send>>,
     input_sink: UnboundedSender<Query>,
     follow_up_sink: UnboundedSender<Query>,
 
@@ -169,7 +185,9 @@ impl UdpQuery {
         let protocol_mapping = ProtocolMapping::default();
         let dns_history = dns::History::default();
 
-        let (socket_sink, socket_stream) = UdpFramed::new(socket, BytesCodec::new()).split();
+        let (socket_sink, socket_stream) = UdpFramed::new(socket, BytesCodec::new())
+            .sink_compat()
+            .split();
 
         let socket_stream = socket_stream
             .map({
@@ -220,9 +238,10 @@ impl UdpQuery {
         let socket_stream =
             socket_stream.map_err(|e| failure::Error::from(e.context("Socket stream error")));
 
-        let (query_sink, query_stream) = futures::sync::mpsc::unbounded::<Query>();
-        let query_stream =
-            Box::new(query_stream.map_err(|_| format_err!("Query stream returned an error")));
+        let (query_sink, query_stream) = futures::channel::mpsc::unbounded::<Query>();
+        let query_stream = query_stream
+            .map_err(|_| format_err!("Query stream returned an error"))
+            .boxed();
 
         let (input_sink, follow_up_sink) = (query_sink.clone(), query_sink.clone());
 
@@ -230,9 +249,9 @@ impl UdpQuery {
         let dns_resolver = dns::ResolverPipe::new(dns_resolver.into(), dns_history.clone());
 
         let (parser_sink, parser_stream) = parser.split();
-        let parser_stream = Box::new(
-            parser_stream.map_err(|e| failure::Error::from(e.context("Parser stream error"))),
-        );
+        let parser_stream = parser_stream
+            .map_err(|e| failure::Error::from(e.context("Parser stream error")))
+            .boxed();
         let (dns_resolver_sink, dns_resolver_stream) = dns_resolver.split();
 
         let dns_resolver_stream = dns_resolver_stream.map({
@@ -248,14 +267,17 @@ impl UdpQuery {
         });
 
         // Outgoing pipe: Query Stream -> DNS Resolver -> UDP Socket
-        let query_to_dns = Box::new(dns_resolver_sink.send_all(query_stream).map(|_| ()));
-        let dns_to_socket = Box::new(socket_sink.send_all(dns_resolver_stream).map(|_| ()));
+        let query_to_dns = dns_resolver_sink.send_all(query_stream).map(|_| ()).boxed();
+        let dns_to_socket = socket_sink
+            .send_all(dns_resolver_stream)
+            .map(|_| ())
+            .boxed();
 
         // Incoming pipe: UDP Socket -> Parser
-        let socket_to_parser = Box::new(parser_sink.send_all(socket_stream).map(|_| ()));
+        let socket_to_parser = parser_sink.send_all(socket_stream).map(|_| ()).boxed();
 
         let pinger_cache = Default::default();
-        let pinger_stream = futures_unordered(vec![Box::new(empty()) as PingerFuture]);
+        let pinger_stream = FuturesUnordered::from_iter(vec![pending().boxed() as PingerFuture]);
 
         Self {
             query_to_dns,
@@ -273,36 +295,39 @@ impl UdpQuery {
     }
 }
 
-impl Sink for UdpQuery {
-    type SinkItem = UserQuery;
-    type SinkError = failure::Error;
+impl Sink<UserQuery> for UdpQuery {
+    type Error = failure::Error;
 
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        Ok(self.input_sink.start_send(item.into())?.map(|v| v.into()))
+    fn poll_ready(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        self.input_sink.poll_ready(waker)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.input_sink.poll_complete()?)
+    fn start_send(self: Pin<&mut Self>, item: UserQuery) -> Result<(), Self::Error> {
+        self.input_sink.start_send(item.into())
     }
 
-    fn close(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.input_sink.close()?)
+    fn poll_flush(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        self.input_sink.poll_flush(waker)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, waker: &Waker) -> Poll<Result<(), Self::Error>> {
+        self.input_sink.poll_close(waker)
     }
 }
 
 impl Stream for UdpQuery {
-    type Item = ServerEntry;
-    type Error = failure::Error;
+    type Item = Fallible<ServerEntry>;
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+    fn poll_next(self: Pin<&mut Self>,
+                 cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         debug!("Polled UdpQuery");
 
-        self.query_to_dns.poll()?;
-        self.dns_to_socket.poll()?;
-        self.socket_to_parser.poll()?;
+        self.query_to_dns.try_poll()?;
+        self.dns_to_socket.try_poll()?;
+        self.socket_to_parser.try_poll()?;
 
         if self.pinger_stream.len() < 20 {
-            if let Async::Ready(v) = self.parser_stream.poll()? {
+            if let Poll::Ready(v) = self.parser_stream.try_poll_next()? {
                 match v {
                     Some(data) => match data {
                         FullParseResult::FollowUp(s) => {
@@ -353,17 +378,17 @@ impl Stream for UdpQuery {
                         }
                     },
                     None => {
-                        return Ok(Async::NotReady);
+                        return Poll::Pending;
                     }
                 }
             }
         }
 
-        if let Async::Ready(srv) = self.pinger_stream.poll()? {
-            return Ok(Async::Ready(srv));
+        if let Poll::Ready(Ok(srv)) = self.pinger_stream.poll_next(cx)? {
+            return Poll::Ready(Ok(srv));
         }
 
-        Ok(Async::NotReady)
+        Poll::Pending
     }
 }
 
